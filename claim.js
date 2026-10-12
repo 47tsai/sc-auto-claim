@@ -174,13 +174,35 @@ async function notify(claimed, accountName, isSuccess) {
         console.log(`🔎 [${ACCOUNT_NAME}] 找到候選按鈕：${JSON.stringify(text)}`);
 
         try {
-          await btn.click({ timeout: 5000 });
+          // 部分按鈕點擊後會觸發頁面更新；不等待導航完成，避免已觸發操作卻被導航等待拖到逾時。
+          await btn.click({ timeout: 15000, noWaitAfter: true });
           claimed++;
           console.log(`🟢 [${ACCOUNT_NAME}] 已點擊：${JSON.stringify(text)}（累計 ${claimed}）`);
           clickedThisRound = true;
-          await page.waitForTimeout(1500);
+          await page.waitForTimeout(2000);
           break;
         } catch (err) {
+          // Playwright 原生點擊逾時時，先確認按鈕仍可操作，再用 DOM click 作一次備援。
+          // 若原生點擊已讓按鈕消失或停用，視為操作已觸發，避免重複點擊。
+          let handled = false;
+          try {
+            handled = await btn.evaluate((el) => {
+              if (!el.isConnected || el.disabled || el.getAttribute('aria-disabled') === 'true') return true;
+              const style = window.getComputedStyle(el);
+              if (style.display === 'none' || style.visibility === 'hidden') return true;
+              el.click();
+              return true;
+            });
+          } catch {}
+
+          if (handled) {
+            claimed++;
+            console.log(`🟡 [${ACCOUNT_NAME}] 原生點擊逾時，已使用 DOM click 備援：${JSON.stringify(text)}（累計 ${claimed}）`);
+            clickedThisRound = true;
+            await page.waitForTimeout(2000);
+            break;
+          }
+
           failedClicks++;
           console.log(`⚠️ [${ACCOUNT_NAME}] 點擊失敗：${JSON.stringify(text)}；${err.message}`);
         }
