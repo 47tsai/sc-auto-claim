@@ -305,7 +305,7 @@ async function notify(claimed, accountName, isSuccess) {
 
           if (fallbackClicked) {
             claimed++;
-                        clickedSuccessfully = true;
+            clickedSuccessfully = true;
             successfulKeys.add(candidate.key);
             console.log("🟡 [" + ACCOUNT_NAME + "] DOM 備援點擊成功：" +
               JSON.stringify(candidate.label) + "（累計 " + claimed + "）");
