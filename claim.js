@@ -131,16 +131,49 @@ async function notify(claimed, accountName, isSuccess) {
 
     for (let step = 0; step < MAX_SCAN_STEPS; step++) {
       let clickedThisRound = false;
-      const buttons = await page.$$('button');
 
-      for (const btn of buttons) {
+      // 同時搜尋互動元素與頁面文字，避免目標不是 <button> 時被漏掉。
+      const interactiveHandles = await page.$(
+        'button, a, [role="button"], [role="link"], input[type="button"], input[type="submit"], [tabindex]:not([tabindex="-1"])'
+      );
+      const textMatches = await page.getByText(/claim|get|領取|免費|免费|free/i).all();
+      const candidateHandles = [...interactiveHandles];
+
+      for (const match of textMatches) {
+        try {
+          const target = await match.evaluateHandle((el) =>
+            el.closest('button, a, [role="button"], [role="link"], input[type="button"], input[type="submit"], [tabindex]:not([tabindex="-1"])') || el
+          );
+          const element = target.asElement();
+          if (element) candidateHandles.push(element);
+          else await target.dispose();
+        } catch {}
+      }
+
+      const seenElements = new Set();
+
+      for (const btn of candidateHandles) {
         let text = '';
 
         try {
-          text = (await btn.innerText()).trim();
-          if (!text || !(await btn.isVisible()) || !(await btn.isEnabled())) {
-            continue;
-          }
+          // 避免同一個元素被互動元素掃描與文字搜尋重複處理。
+          const elementId = await btn.evaluate((el) => {
+            if (!el.__autoClaimScanId) {
+              el.__autoClaimScanId = Math.random().toString(36).slice(2);
+            }
+            return el.__autoClaimScanId;
+          });
+          if (seenElements.has(elementId)) continue;
+          seenElements.add(elementId);
+
+          text = (await btn.innerText().catch(() => '')) || (await btn.getAttribute('aria-label')) || '';
+          text = text.trim();
+          if (!text || !(await btn.isVisible())) continue;
+
+          const enabled = await btn.evaluate((el) =>
+            !('disabled' in el && el.disabled) && el.getAttribute('aria-disabled') !== 'true'
+          );
+          if (!enabled) continue;
         } catch {
           continue;
         }
