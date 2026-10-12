@@ -133,7 +133,7 @@ async function notify(claimed, accountName, isSuccess) {
       let clickedThisRound = false;
 
       // 同時搜尋互動元素與頁面文字，避免目標不是 <button> 時被漏掉。
-      const interactiveHandles = await page.$(
+      const interactiveHandles = await page.$$(
         'button, a, [role="button"], [role="link"], input[type="button"], input[type="submit"], [tabindex]:not([tabindex="-1"])'
       );
       const textMatches = await page.getByText(/claim|get|領取|免費|免费|free/i).all();
