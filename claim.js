@@ -88,7 +88,7 @@ async function notify(claimed, accountName, isSuccess) {
     saveState(state);
   }
 
-  if (state.success === true && state.fullScan === true) {
+  if (state.success === true && (state.logicVersion === 2 || state.fullScan === true)) {
     console.log(`😴 [${ACCOUNT_NAME}] 今日已完成完整掃描並成功，跳過`);
     return;
   }
@@ -97,6 +97,7 @@ async function notify(claimed, accountName, isSuccess) {
   if (state.success === true && state.fullScan !== true) {
     console.log(`🔁 [${ACCOUNT_NAME}] 發現舊版成功紀錄，重新完整掃描以補領剩餘內容`);
     state.success = false;
+    state.logicVersion = 2;
     saveState(state);
   }
 
@@ -129,159 +130,273 @@ async function notify(claimed, accountName, isSuccess) {
 
     let failedClicks = 0;
     let scrollSteps = 0;
-    let stableBottomRounds = 0;
-    let previousHeight = 0;
+    let completedRounds = 0;
     let scanCompleted = false;
+    let fatalPageError = null;
     const scanStartedAt = Date.now();
-    const attemptedKeys = new Set();
+    const successfulKeys = new Set();
+    const roundFailedKeys = new Set();
 
     const findCandidates = async (scanId) => page.evaluate(({ scanId, selector, marker }) => {
-      document.querySelectorAll(`[${marker}]`).forEach((el) => el.removeAttribute(marker));
+      document.querySelectorAll("[" + marker + "]").forEach((el) => el.removeAttribute(marker));
 
       const visible = (el) => {
         const style = getComputedStyle(el);
         const rect = el.getBoundingClientRect();
-        return style.display !== 'none' && style.visibility !== 'hidden' &&
-          style.pointerEvents !== 'none' && Number(style.opacity) !== 0 &&
+        return style.display !== "none" && style.visibility !== "hidden" &&
+          style.pointerEvents !== "none" && Number(style.opacity) !== 0 &&
           rect.width > 0 && rect.height > 0;
       };
       const labelOf = (el) => (
-        el.innerText || el.getAttribute('aria-label') || el.getAttribute('title') ||
-        el.value || el.textContent || ''
-      ).replace(/\s+/g, ' ').trim();
-      const matches = (value) => {
-        const text = String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
+        el.innerText || el.getAttribute("aria-label") || el.getAttribute("title") ||
+        el.value || el.textContent || ""
+      ).replace(/\s+/g, " ").trim();
+      const hasClaimIntent = (value) => {
+        const text = String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
         if (!text || text.length > 100) return false;
-        return /\b(claim|get|free|collect|redeem)\b/i.test(text) ||
-          /領取|免費|领取|免费/.test(text);
+        // Navigation wording is not a claim action unless the label explicitly says to claim/redeem.
+        const explicitClaim = /\b(claim|get reward|collect|redeem|领取|領取)\b/i.test(text) ||
+          /领取|領取/.test(text);
+        if (!explicitClaim && /(前往|前去|跳至|跳到|查看|了解更多|go to|visit|jump to|learn more|more info)/i.test(text)) {
+          return false;
+        }
+        if (!/\b(claim|get|free|collect|redeem)\b/i.test(text) && !/領取|免費|领取|免费/.test(text)) {
+          return false;
+        }
+        return true;
       };
 
       const targets = new Set();
       for (const el of document.querySelectorAll(selector)) {
-        if (visible(el) && !el.disabled && el.getAttribute('aria-disabled') !== 'true' &&
-            matches(labelOf(el))) targets.add(el);
+        if (!visible(el) || el.disabled || el.getAttribute("aria-disabled") === "true") continue;
+        const label = labelOf(el);
+        if (!hasClaimIntent(label)) continue;
+
+        // A free-only same-page anchor is likely navigation, not a reward action.
+        const href = el.getAttribute("href") || "";
+        const freeOnly = /^(free|免費|免费)$/i.test(label);
+        if (freeOnly && el.tagName === "A" && href.startsWith("#")) continue;
+        targets.add(el);
       }
 
-      // Search leaf text once in the page context, not through hundreds of Playwright calls.
-      for (const el of document.querySelectorAll('body *')) {
-        if (el.children.length || !visible(el) || !matches(labelOf(el))) continue;
-        const target = el.closest(selector) || el;
-        if (visible(target) && !target.disabled &&
-            target.getAttribute('aria-disabled') !== 'true') targets.add(target);
+      // Include text-bearing elements only when they resolve to an interactive ancestor.
+      for (const el of document.querySelectorAll("body *")) {
+        if (el.children.length || !visible(el) || !hasClaimIntent(labelOf(el))) continue;
+        const target = el.closest(selector);
+        if (!target || !visible(target) || target.disabled ||
+            target.getAttribute("aria-disabled") === "true") continue;
+        const targetLabel = labelOf(target);
+        if (hasClaimIntent(targetLabel)) targets.add(target);
       }
 
       const result = [];
       let index = 0;
       for (const el of targets) {
         const label = labelOf(el);
-        if (!matches(label)) continue;
+        if (!hasClaimIntent(label)) continue;
         const context = el.closest('article, li, [role="listitem"], [data-testid]') ||
           el.parentElement?.parentElement || el.parentElement;
-        const contextText = (context?.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 180);
-        const key = [label.toLowerCase(), el.getAttribute('aria-label') || '', contextText].join('|');
-        const id = `${scanId}-${index++}`;
+        const contextText = (context?.innerText || "").replace(/\s+/g, " ").trim().slice(0, 180);
+        const href = el.getAttribute("href") || "";
+        const aria = el.getAttribute("aria-label") || "";
+        const testId = el.getAttribute("data-testid") || "";
+        const key = [
+          el.tagName.toLowerCase(),
+          label.toLowerCase(),
+          aria,
+          href,
+          testId,
+          contextText
+        ].join("|");
+        const id = scanId + "-" + index++;
         el.setAttribute(marker, id);
-        result.push({ id, label: label.slice(0, 100), key, tag: el.tagName.toLowerCase(), html: el.outerHTML.slice(0, 350) });
+        result.push({
+          id,
+          label: label.slice(0, 100),
+          key,
+          tag: el.tagName.toLowerCase(),
+          html: el.outerHTML.slice(0, 350)
+        });
       }
       return result;
     }, { scanId, selector: interactiveSelector, marker: MARKER });
 
-    for (let step = 0; step < MAX_SCAN_STEPS; step++) {
-      if (Date.now() - scanStartedAt >= MAX_RUNTIME_MS) {
-        console.log(`⏱️ [${ACCOUNT_NAME}] 已達 4 分鐘執行上限，停止掃描`);
-        break;
-      }
+    const reloadPage = async (reason) => {
+      console.log("🔄 [" + ACCOUNT_NAME + "] 刷新頁面：" + reason);
+      await page.reload({ waitUntil: "domcontentloaded", timeout: 60000 });
+      await page.waitForLoadState("networkidle", { timeout: 8000 }).catch(() => {});
+      await page.waitForTimeout(1200);
+      await page.evaluate(() => window.scrollTo(0, 0));
+    };
 
-      const candidates = await findCandidates(`scan${step}`);
-      let clickedThisRound = false;
-      let checked = 0;
+    let shouldStop = false;
 
-      for (const candidate of candidates) {
-        if (Date.now() - scanStartedAt >= MAX_RUNTIME_MS || checked >= 40) break;
-        if (attemptedKeys.has(candidate.key)) continue;
-        attemptedKeys.add(candidate.key);
-        checked++;
+    // Round 1 is the normal full-page pass. Round 2 is the one and only recovery pass.
+    // A successful click/reload/re-scan stays within the same round.
+    for (let round = 1; round <= 2 && !shouldStop; round++) {
+      completedRounds = round;
+      roundFailedKeys.clear();
+      scrollSteps = 0;
+      let stableBottomRounds = 0;
+      let previousHeight = 0;
+      let successfulClickThisRound = false;
+      let anyCandidateThisRound = false;
 
-        console.log(`🔎 [${ACCOUNT_NAME}] 找到候選元素：${JSON.stringify(candidate.label)} <${candidate.tag}>`);
-        const locator = page.locator(`[${MARKER}="${candidate.id}"]`).first();
+      console.log("🔍 [" + ACCOUNT_NAME + "] 開始第 " + round + "/2 輪掃描");
 
-        try {
-          await locator.click({ timeout: CLICK_TIMEOUT_MS, noWaitAfter: true });
-          claimed++;
-          clickedThisRound = true;
-          console.log(`🟢 [${ACCOUNT_NAME}] 已送出點擊：${JSON.stringify(candidate.label)}（累計 ${claimed}）`);
-          await page.waitForTimeout(800);
+      while (!shouldStop) {
+        if (Date.now() - scanStartedAt >= MAX_RUNTIME_MS) {
+          console.log("⏱️ [" + ACCOUNT_NAME + "] 已達 4 分鐘執行上限，停止掃描");
+          shouldStop = true;
           break;
-        } catch (err) {
-          let fallbackClicked = false;
-          try {
-            fallbackClicked = await page.evaluate(({ id, marker }) => {
-              const el = document.querySelector(`[${marker}="${id}"]`);
-              if (!el || !el.isConnected || el.disabled ||
-                  el.getAttribute('aria-disabled') === 'true') return false;
-              const style = getComputedStyle(el);
-              const rect = el.getBoundingClientRect();
-              if (style.display === 'none' || style.visibility === 'hidden' ||
-                  rect.width <= 0 || rect.height <= 0) return false;
-              el.click();
-              return true;
-            }, { id: candidate.id, marker: MARKER });
-          } catch {}
+        }
 
-          if (fallbackClicked) {
-            claimed++;
-            clickedThisRound = true;
-            console.log(`🟡 [${ACCOUNT_NAME}] DOM 備援已送出點擊：${JSON.stringify(candidate.label)}（累計 ${claimed}）`);
-            await page.waitForTimeout(800);
+        const candidates = await findCandidates("round" + round + "-scan" + scrollSteps);
+        if (candidates.length) anyCandidateThisRound = true;
+
+        let clickedSuccessfully = false;
+        for (const candidate of candidates) {
+          if (Date.now() - scanStartedAt >= MAX_RUNTIME_MS) {
+            shouldStop = true;
             break;
           }
+          if (successfulKeys.has(candidate.key) || roundFailedKeys.has(candidate.key)) continue;
 
-          failedClicks++;
-          console.log(`⚠️ [${ACCOUNT_NAME}] 點擊失敗：${JSON.stringify(candidate.label)}；${err.message.split('\n')[0]}`);
-          console.log(`   元素資訊：${candidate.html}`);
+          console.log("🔎 [" + ACCOUNT_NAME + "] 找到候選元素：" +
+            JSON.stringify(candidate.label) + " <" + candidate.tag + ">");
+          const locator = page.locator("[" + MARKER + "=\"" + candidate.id + "\"]").first();
+
+          try {
+            await locator.click({ timeout: CLICK_TIMEOUT_MS, noWaitAfter: true });
+            claimed++;
+            successfulClickThisRound = true;
+            clickedSuccessfully = true;
+            successfulKeys.add(candidate.key);
+            console.log("🟢 [" + ACCOUNT_NAME + "] 點擊操作成功：" +
+              JSON.stringify(candidate.label) + "（累計 " + claimed + "）");
+            await reloadPage("點擊操作成功後立即刷新");
+            break;
+          } catch (err) {
+            let fallbackClicked = false;
+            try {
+              fallbackClicked = await page.evaluate(({ id, marker }) => {
+                const el = document.querySelector("[" + marker + "=\"" + id + "\"]");
+                if (!el || !el.isConnected || el.disabled ||
+                    el.getAttribute("aria-disabled") === "true") return false;
+                const style = getComputedStyle(el);
+                const rect = el.getBoundingClientRect();
+                if (style.display === "none" || style.visibility === "hidden" ||
+                    rect.width <= 0 || rect.height <= 0) return false;
+                el.click();
+                return true;
+              }, { id: candidate.id, marker: MARKER });
+            } catch {}
+
+            if (fallbackClicked) {
+              claimed++;
+              successfulClickThisRound = true;
+              clickedSuccessfully = true;
+              successfulKeys.add(candidate.key);
+              console.log("🟡 [" + ACCOUNT_NAME + "] DOM 備援點擊成功：" +
+                JSON.stringify(candidate.label) + "（累計 " + claimed + "）");
+              await reloadPage("DOM 備援點擊後立即刷新");
+              break;
+            }
+
+            failedClicks++;
+            roundFailedKeys.add(candidate.key);
+            console.log("⚠️ [" + ACCOUNT_NAME + "] 點擊失敗，暫不刷新，繼續下一個候選項目：" +
+              JSON.stringify(candidate.label) + "；" + String(err.message).split("\n")[0]);
+            console.log("   元素資訊：" + candidate.html);
+          }
+        }
+
+        if (shouldStop) break;
+        if (clickedSuccessfully) {
+          // The page has been refreshed. Re-scan current DOM immediately; do not use stale elements.
+          stableBottomRounds = 0;
+          previousHeight = 0;
+          continue;
+        }
+
+        const metrics = await page.evaluate(() => ({
+          y: window.scrollY,
+          viewport: window.innerHeight,
+          height: Math.max(
+            document.body?.scrollHeight || 0,
+            document.documentElement?.scrollHeight || 0
+          )
+        }));
+        const atBottom = metrics.y + metrics.viewport >= metrics.height - 8;
+        stableBottomRounds = atBottom && metrics.height === previousHeight
+          ? stableBottomRounds + 1
+          : 0;
+        previousHeight = metrics.height;
+
+        console.log("📜 [" + ACCOUNT_NAME + "] 第 " + round + " 輪進度：" +
+          Math.min(metrics.y + metrics.viewport, metrics.height) + "/" + metrics.height +
+          "，成功點擊 " + claimed + " 個");
+
+        if (atBottom) {
+          await page.waitForTimeout(700);
+          if (stableBottomRounds >= 3) break;
+        } else {
+          if (scrollSteps >= MAX_SCAN_STEPS) {
+            console.log("⚠️ [" + ACCOUNT_NAME + "] 已達單輪捲動上限");
+            break;
+          }
+          await page.evaluate(() =>
+            window.scrollBy(0, Math.max(500, Math.floor(window.innerHeight * 0.75)))
+          );
+          scrollSteps++;
+          await page.waitForTimeout(600);
         }
       }
 
-      // Re-query after a click because the store may rerender or remove the claimed item.
-      if (clickedThisRound) continue;
+      console.log("📜 [" + ACCOUNT_NAME + "] 第 " + round + " 輪結束：捲動 " +
+        scrollSteps + " 次，累計點擊成功 " + claimed + "，點擊失敗 " + failedClicks);
 
-      const metrics = await page.evaluate(() => ({
-        y: window.scrollY,
-        viewport: window.innerHeight,
-        height: Math.max(document.body?.scrollHeight || 0, document.documentElement?.scrollHeight || 0)
-      }));
-      const atBottom = metrics.y + metrics.viewport >= metrics.height - 8;
-      stableBottomRounds = atBottom && metrics.height === previousHeight ? stableBottomRounds + 1 : 0;
-      previousHeight = metrics.height;
+      if (shouldStop) break;
 
-      console.log(`📜 [${ACCOUNT_NAME}] 掃描進度：${Math.min(metrics.y + metrics.viewport, metrics.height)}/${metrics.height}，已點擊 ${claimed} 個`);
-
-      if (atBottom) {
-        await page.waitForTimeout(700);
-        if (stableBottomRounds >= 3) {
+      // If round 1 found no candidates, or any click failed, refresh once and try one recovery pass.
+      // If all found actions were clicked successfully, finish without an unnecessary extra pass.
+      if (round === 1) {
+        const needsRecovery = !anyCandidateThisRound || roundFailedKeys.size > 0;
+        if (!needsRecovery) {
           scanCompleted = true;
           break;
         }
+        try {
+          await reloadPage("第一輪結束，準備唯一一次補救掃描");
+        } catch (err) {
+          fatalPageError = "補救刷新失敗：" + String(err.message || err);
+          console.log("❌ [" + ACCOUNT_NAME + "] " + fatalPageError);
+          shouldStop = true;
+        }
       } else {
-        await page.evaluate(() => window.scrollBy(0, Math.max(500, Math.floor(window.innerHeight * 0.75))));
-        scrollSteps++;
-        await page.waitForTimeout(600);
+        scanCompleted = true;
       }
     }
+
+    console.log("🔍 [" + ACCOUNT_NAME + "] 完成掃描輪數：" + completedRounds);
+    console.log("🔍 [" + ACCOUNT_NAME + "] 完整掃描流程：" + (scanCompleted ? "是" : "否") +
+      "；點擊失敗：" + failedClicks);
+    console.log("✅ [" + ACCOUNT_NAME + "] 點擊操作成功數： " + claimed);
 
     console.log(`📜 [${ACCOUNT_NAME}] 滾動次數：${scrollSteps}`);
     console.log(`🔍 [${ACCOUNT_NAME}] 完整掃描：${scanCompleted ? '是' : '否'}；點擊失敗：${failedClicks}`);
 
     console.log(`✅ [${ACCOUNT_NAME}] 完成：${claimed}`);
 
-    const isSuccess = scanCompleted && claimed > 0 && failedClicks === 0;
+    const isSuccess = claimed >= 1;
     const checkedAt = new Date().toISOString();
 
     state.lastClaimAt = checkedAt;
     state.lastResult = isSuccess ? "成功" : "失敗";
 
     state.success = isSuccess;
-    state.fullScan = scanCompleted && failedClicks === 0;
+    state.fullScan = scanCompleted;
+    state.logicVersion = 2;
 
     saveState(state);
     console.log(`RESULT=${isSuccess ? "success" : "failure"}`);
