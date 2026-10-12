@@ -116,8 +116,7 @@ async function notify(claimed, accountName, isSuccess) {
     });
 
     await page.waitForLoadState('networkidle').catch(() => {});
-    await page.waitForTimeout(8000);
-    await page.waitForSelector('button', { timeout: 15000 }).catch(() => {});
+    await page.waitForTimeout(2000);
 
     console.log(`👉 [${ACCOUNT_NAME}] 開始完整掃描頁面`);
 
@@ -149,11 +148,11 @@ async function notify(claimed, accountName, isSuccess) {
       const labelOf = (el) => (
         el.innerText || el.getAttribute('aria-label') || el.getAttribute('title') ||
         el.value || el.textContent || ''
-      ).replace(/\\s+/g, ' ').trim();
+      ).replace(/\s+/g, ' ').trim();
       const matches = (value) => {
-        const text = String(value || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+        const text = String(value || '').replace(/\s+/g, ' ').trim().toLowerCase();
         if (!text || text.length > 100) return false;
-        return /\\b(claim|get|free|collect|redeem)\\b/i.test(text) ||
+        return /\b(claim|get|free|collect|redeem)\b/i.test(text) ||
           /領取|免費|领取|免费/.test(text);
       };
 
@@ -178,7 +177,7 @@ async function notify(claimed, accountName, isSuccess) {
         if (!matches(label)) continue;
         const context = el.closest('article, li, [role="listitem"], [data-testid]') ||
           el.parentElement?.parentElement || el.parentElement;
-        const contextText = (context?.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 180);
+        const contextText = (context?.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 180);
         const key = [label.toLowerCase(), el.getAttribute('aria-label') || '', contextText].join('|');
         const id = `${scanId}-${index++}`;
         el.setAttribute(marker, id);
