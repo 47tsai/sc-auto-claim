@@ -237,7 +237,7 @@ async function notify(claimed, accountName, isSuccess) {
           }
 
           failedClicks++;
-          console.log(`⚠️ [${ACCOUNT_NAME}] 點擊失敗：${JSON.stringify(candidate.label)}；${err.message.split('\\n')[0]}`);
+          console.log(`⚠️ [${ACCOUNT_NAME}] 點擊失敗：${JSON.stringify(candidate.label)}；${err.message.split('\n')[0]}`);
           console.log(`   元素資訊：${candidate.html}`);
         }
       }
