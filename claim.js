@@ -84,12 +84,20 @@ async function notify(claimed, accountName, isSuccess) {
   if (state.gameDay !== gameDay) {
     state.gameDay = gameDay;
     state.success = false;
+    state.fullScan = false;
     saveState(state);
   }
 
-  if (state.success === true) {
-    console.log(`😴 [${ACCOUNT_NAME}] 今日已成功，跳過`);
+  if (state.success === true && state.fullScan === true) {
+    console.log(`😴 [${ACCOUNT_NAME}] 今日已完成完整掃描並成功，跳過`);
     return;
+  }
+
+  // 舊版只要點到一個按鈕就會記為成功，不能讓這種紀錄阻止新版補領。
+  if (state.success === true && state.fullScan !== true) {
+    console.log(`🔁 [${ACCOUNT_NAME}] 發現舊版成功紀錄，重新完整掃描以補領剩餘內容`);
+    state.success = false;
+    saveState(state);
   }
 
   let claimed = 0;
@@ -232,9 +240,8 @@ async function notify(claimed, accountName, isSuccess) {
     state.lastClaimAt = checkedAt;
     state.lastResult = isSuccess ? "成功" : "失敗";
 
-    if (isSuccess) {
-      state.success = true;
-    }
+    state.success = isSuccess;
+    state.fullScan = scanCompleted && failedClicks === 0;
 
     saveState(state);
     console.log(`RESULT=${isSuccess ? "success" : "failure"}`);
