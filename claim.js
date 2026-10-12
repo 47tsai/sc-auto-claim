@@ -122,16 +122,26 @@ async function notify(claimed, accountName, isSuccess) {
         continue;
       }
 
-      if (
-        text.includes('Claim') ||
-        text.includes('Get') ||
-        text.includes('領取')
-      ) {
+      const normalizedText = text.trim().toLowerCase();
+      const isClaimButton =
+        normalizedText.includes('claim') ||
+        normalizedText.includes('get') ||
+        normalizedText.includes('領取') ||
+        normalizedText.includes('免費') ||
+        normalizedText.includes('免费') ||
+        normalizedText.includes('free');
+
+      if (isClaimButton) {
+        console.log(`🔎 [${ACCOUNT_NAME}] 找到候選按鈕：${JSON.stringify(text.trim())}`);
+
         try {
-          await btn.click();
+          await btn.click({ timeout: 5000 });
           claimed++;
+          console.log(`🟢 [${ACCOUNT_NAME}] 已點擊：${JSON.stringify(text.trim())}`);
           await page.waitForTimeout(1200);
-        } catch {}
+        } catch (err) {
+          console.log(`⚠️ [${ACCOUNT_NAME}] 點擊失敗：${JSON.stringify(text.trim())}；${err.message}`);
+        }
       }
     }
 
