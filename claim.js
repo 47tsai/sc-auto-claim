@@ -159,11 +159,11 @@ async function notify(claimed, accountName, isSuccess) {
         let key = text;
         try {
           key = await btn.evaluate((el) => {
-            const buttonText = (el.innerText || el.textContent || '').trim().replace(/\\s+/g, ' ');
+            const buttonText = (el.innerText || el.textContent || '').trim().replace(/\s+/g, ' ');
             const context = el.closest('article, li, [role="listitem"], [data-testid]') ||
               el.parentElement?.parentElement ||
               el.parentElement;
-            const contextText = (context?.innerText || '').trim().replace(/\\s+/g, ' ').slice(0, 300);
+            const contextText = (context?.innerText || '').trim().replace(/\s+/g, ' ').slice(0, 300);
             return [buttonText, el.getAttribute('aria-label') || '', contextText].join('|');
           });
         } catch {}
