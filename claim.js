@@ -266,49 +266,67 @@ async function notify(claimed, accountName, isSuccess) {
             JSON.stringify(candidate.label) + " <" + candidate.tag + ">");
           const locator = page.locator("[" + MARKER + "=\"" + candidate.id + "\"]").first();
 
+          let clickError = null;
           try {
             await locator.click({ timeout: CLICK_TIMEOUT_MS, noWaitAfter: true });
+          } catch (err) {
+            clickError = err;
+          }
+
+          if (!clickError) {
             claimed++;
             successfulClickThisRound = true;
             clickedSuccessfully = true;
             successfulKeys.add(candidate.key);
             console.log("🟢 [" + ACCOUNT_NAME + "] 點擊操作成功：" +
               JSON.stringify(candidate.label) + "（累計 " + claimed + "）");
-            await reloadPage("點擊操作成功後立即刷新");
-            break;
-          } catch (err) {
-            let fallbackClicked = false;
             try {
-              fallbackClicked = await page.evaluate(({ id, marker }) => {
-                const el = document.querySelector("[" + marker + "=\"" + id + "\"]");
-                if (!el || !el.isConnected || el.disabled ||
-                    el.getAttribute("aria-disabled") === "true") return false;
-                const style = getComputedStyle(el);
-                const rect = el.getBoundingClientRect();
-                if (style.display === "none" || style.visibility === "hidden" ||
-                    rect.width <= 0 || rect.height <= 0) return false;
-                el.click();
-                return true;
-              }, { id: candidate.id, marker: MARKER });
-            } catch {}
-
-            if (fallbackClicked) {
-              claimed++;
-              successfulClickThisRound = true;
-              clickedSuccessfully = true;
-              successfulKeys.add(candidate.key);
-              console.log("🟡 [" + ACCOUNT_NAME + "] DOM 備援點擊成功：" +
-                JSON.stringify(candidate.label) + "（累計 " + claimed + "）");
-              await reloadPage("DOM 備援點擊後立即刷新");
-              break;
+              await reloadPage("點擊操作成功後立即刷新");
+            } catch (err) {
+              fatalPageError = "點擊成功後刷新失敗：" + String(err.message || err);
+              console.log("❌ [" + ACCOUNT_NAME + "] " + fatalPageError);
+              shouldStop = true;
             }
-
-            failedClicks++;
-            roundFailedKeys.add(candidate.key);
-            console.log("⚠️ [" + ACCOUNT_NAME + "] 點擊失敗，暫不刷新，繼續下一個候選項目：" +
-              JSON.stringify(candidate.label) + "；" + String(err.message).split("\n")[0]);
-            console.log("   元素資訊：" + candidate.html);
+            break;
           }
+
+          let fallbackClicked = false;
+          try {
+            fallbackClicked = await page.evaluate(({ id, marker }) => {
+              const el = document.querySelector("[" + marker + "=\"" + id + "\"]");
+              if (!el || !el.isConnected || el.disabled ||
+                  el.getAttribute("aria-disabled") === "true") return false;
+              const style = getComputedStyle(el);
+              const rect = el.getBoundingClientRect();
+              if (style.display === "none" || style.visibility === "hidden" ||
+                  rect.width <= 0 || rect.height <= 0) return false;
+              el.click();
+              return true;
+            }, { id: candidate.id, marker: MARKER });
+          } catch {}
+
+          if (fallbackClicked) {
+            claimed++;
+            successfulClickThisRound = true;
+            clickedSuccessfully = true;
+            successfulKeys.add(candidate.key);
+            console.log("🟡 [" + ACCOUNT_NAME + "] DOM 備援點擊成功：" +
+              JSON.stringify(candidate.label) + "（累計 " + claimed + "）");
+            try {
+              await reloadPage("DOM 備援點擊後立即刷新");
+            } catch (err) {
+              fatalPageError = "DOM 備援點擊後刷新失敗：" + String(err.message || err);
+              console.log("❌ [" + ACCOUNT_NAME + "] " + fatalPageError);
+              shouldStop = true;
+            }
+            break;
+          }
+
+          failedClicks++;
+          roundFailedKeys.add(candidate.key);
+          console.log("⚠️ [" + ACCOUNT_NAME + "] 點擊失敗，暫不刷新，繼續下一個候選項目：" +
+            JSON.stringify(candidate.label) + "；" + String(clickError.message || clickError).split("\n")[0]);
+          console.log("   元素資訊：" + candidate.html);
         }
 
         if (shouldStop) break;
@@ -405,12 +423,16 @@ async function notify(claimed, accountName, isSuccess) {
   } catch (err) {
     console.log("❌ error", err);
 
+    const isSuccess = claimed >= 1;
     state.lastClaimAt = new Date().toISOString();
-    state.lastResult = "失敗";
+    state.lastResult = isSuccess ? "成功" : "失敗";
+    state.success = isSuccess;
+    state.logicVersion = 2;
+    state.lastError = String(err.message || err).slice(0, 500);
     saveState(state);
 
-    console.log("RESULT=failure");
-    await notify(0, ACCOUNT_NAME, false);
+    console.log("RESULT=" + (isSuccess ? "success" : "failure"));
+    await notify(claimed, ACCOUNT_NAME, isSuccess);
   } finally {
     await browser.close();
   }
