@@ -52,7 +52,9 @@ async function notify(claimed, accountName, isSuccess) {
             name: "🎁 結果",
             value: isSuccess
               ? `成功領取 ${claimed} 個`
-              : "沒有可領取獎勵（本次未成功）",
+              : claimed > 0
+              ? `已點擊 ${claimed} 個，但頁面未能完整掃描或有按鈕點擊失敗`
+              : "沒有成功點擊可領取獎勵",
             inline: false
           }
         ],
@@ -109,45 +111,122 @@ async function notify(claimed, accountName, isSuccess) {
     await page.waitForTimeout(8000);
     await page.waitForSelector('button', { timeout: 15000 }).catch(() => {});
 
-    console.log(`👉 [${ACCOUNT_NAME}] 開始掃描`);
+    console.log(`👉 [${ACCOUNT_NAME}] 開始完整掃描頁面`);
 
-    const buttons = await page.$$('button');
+    const MAX_SCAN_STEPS = 150;
+    let failedClicks = 0;
+    let scrollSteps = 0;
+    let stableBottomRounds = 0;
+    let previousHeight = 0;
+    let scanCompleted = false;
+    const attemptedKeys = new Set();
 
-    for (const btn of buttons) {
-      let text = '';
+    for (let step = 0; step < MAX_SCAN_STEPS; step++) {
+      let clickedThisRound = false;
+      const buttons = await page.$$('button');
 
-      try {
-        text = await btn.innerText();
-      } catch {
-        continue;
-      }
+      for (const btn of buttons) {
+        let text = '';
 
-      const normalizedText = text.trim().toLowerCase();
-      const isClaimButton =
-        normalizedText.includes('claim') ||
-        normalizedText.includes('get') ||
-        normalizedText.includes('領取') ||
-        normalizedText.includes('免費') ||
-        normalizedText.includes('免费') ||
-        normalizedText.includes('free');
+        try {
+          text = (await btn.innerText()).trim();
+          if (!text || !(await btn.isVisible()) || !(await btn.isEnabled())) {
+            continue;
+          }
+        } catch {
+          continue;
+        }
 
-      if (isClaimButton) {
-        console.log(`🔎 [${ACCOUNT_NAME}] 找到候選按鈕：${JSON.stringify(text.trim())}`);
+        const normalizedText = text.toLowerCase();
+        const isClaimButton =
+          normalizedText.includes('claim') ||
+          normalizedText.includes('get') ||
+          normalizedText.includes('領取') ||
+          normalizedText.includes('免費') ||
+          normalizedText.includes('免费') ||
+          normalizedText.includes('free');
+
+        if (!isClaimButton) continue;
+
+        let key = text;
+        try {
+          key = await btn.evaluate((el) => {
+            const buttonText = (el.innerText || el.textContent || '').trim().replace(/\\s+/g, ' ');
+            const context = el.closest('article, li, [role="listitem"], [data-testid]') ||
+              el.parentElement?.parentElement ||
+              el.parentElement;
+            const contextText = (context?.innerText || '').trim().replace(/\\s+/g, ' ').slice(0, 300);
+            return [buttonText, el.getAttribute('aria-label') || '', contextText].join('|');
+          });
+        } catch {}
+
+        if (attemptedKeys.has(key)) continue;
+        attemptedKeys.add(key);
+
+        console.log(`🔎 [${ACCOUNT_NAME}] 找到候選按鈕：${JSON.stringify(text)}`);
 
         try {
           await btn.click({ timeout: 5000 });
           claimed++;
-          console.log(`🟢 [${ACCOUNT_NAME}] 已點擊：${JSON.stringify(text.trim())}`);
-          await page.waitForTimeout(1200);
+          console.log(`🟢 [${ACCOUNT_NAME}] 已點擊：${JSON.stringify(text)}（累計 ${claimed}）`);
+          clickedThisRound = true;
+          await page.waitForTimeout(1500);
+          break;
         } catch (err) {
-          console.log(`⚠️ [${ACCOUNT_NAME}] 點擊失敗：${JSON.stringify(text.trim())}；${err.message}`);
+          failedClicks++;
+          console.log(`⚠️ [${ACCOUNT_NAME}] 點擊失敗：${JSON.stringify(text)}；${err.message}`);
         }
+      }
+
+      // 每次成功點擊後重新掃描，避免頁面更新或按鈕重排造成漏領。
+      if (clickedThisRound) continue;
+
+      const metrics = await page.evaluate(() => {
+        const height = Math.max(
+          document.body?.scrollHeight || 0,
+          document.documentElement?.scrollHeight || 0
+        );
+        return {
+          y: window.scrollY,
+          viewport: window.innerHeight,
+          height
+        };
+      });
+
+      const atBottom = metrics.y + metrics.viewport >= metrics.height - 8;
+      if (atBottom && metrics.height === previousHeight) {
+        stableBottomRounds++;
+      } else {
+        stableBottomRounds = 0;
+      }
+      previousHeight = metrics.height;
+
+      console.log(
+        `📜 [${ACCOUNT_NAME}] 掃描進度：${Math.min(metrics.y + metrics.viewport, metrics.height)}/${metrics.height}，已點擊 ${claimed} 個`
+      );
+
+      // 到達頁尾後持續等待並複查，讓延遲載入的內容有時間出現。
+      if (atBottom) {
+        await page.waitForTimeout(1200);
+        if (stableBottomRounds >= 4) {
+          scanCompleted = true;
+          break;
+        }
+      } else {
+        await page.evaluate(() => {
+          window.scrollBy(0, Math.max(500, Math.floor(window.innerHeight * 0.7)));
+        });
+        scrollSteps++;
+        await page.waitForTimeout(1000);
       }
     }
 
+    console.log(`📜 [${ACCOUNT_NAME}] 滾動次數：${scrollSteps}`);
+    console.log(`🔍 [${ACCOUNT_NAME}] 完整掃描：${scanCompleted ? '是' : '否'}；點擊失敗：${failedClicks}`);
+
     console.log(`✅ [${ACCOUNT_NAME}] 完成：${claimed}`);
 
-    const isSuccess = claimed > 0;
+    const isSuccess = scanCompleted && claimed > 0 && failedClicks === 0;
     const checkedAt = new Date().toISOString();
 
     state.lastClaimAt = checkedAt;
