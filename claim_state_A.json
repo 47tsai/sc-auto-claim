@@ -1,6 +1,6 @@
 {
   "gameDay": "2026-10-12_16",
-  "success": true,
-  "lastClaimAt": "2026-10-12T08:26:15.377Z",
-  "lastResult": "成功"
+  "success": false,
+  "lastClaimAt": "2026-10-12T08:44:58.607Z",
+  "lastResult": "失敗"
 }
