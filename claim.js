@@ -121,166 +121,152 @@ async function notify(claimed, accountName, isSuccess) {
 
     console.log(`👉 [${ACCOUNT_NAME}] 開始完整掃描頁面`);
 
-    const MAX_SCAN_STEPS = 150;
+    const MAX_SCAN_STEPS = 80;
+    const MAX_RUNTIME_MS = 4 * 60 * 1000;
+    const CLICK_TIMEOUT_MS = 4000;
+    const MARKER = 'data-auto-claim-target';
+    const interactiveSelector =
+      'button, a, [role="button"], [role="link"], input[type="button"], input[type="submit"], [tabindex]:not([tabindex="-1"])';
+
     let failedClicks = 0;
     let scrollSteps = 0;
     let stableBottomRounds = 0;
     let previousHeight = 0;
     let scanCompleted = false;
+    const scanStartedAt = Date.now();
     const attemptedKeys = new Set();
 
-    for (let step = 0; step < MAX_SCAN_STEPS; step++) {
-      let clickedThisRound = false;
+    const findCandidates = async (scanId) => page.evaluate(({ scanId, selector, marker }) => {
+      document.querySelectorAll(`[${marker}]`).forEach((el) => el.removeAttribute(marker));
 
-      // 同時搜尋互動元素與頁面文字，避免目標不是 <button> 時被漏掉。
-      const interactiveHandles = await page.$$(
-        'button, a, [role="button"], [role="link"], input[type="button"], input[type="submit"], [tabindex]:not([tabindex="-1"])'
-      );
-      const textMatches = await page.getByText(/claim|get|領取|免費|免费|free/i).all();
-      const candidateHandles = [...interactiveHandles];
+      const visible = (el) => {
+        const style = getComputedStyle(el);
+        const rect = el.getBoundingClientRect();
+        return style.display !== 'none' && style.visibility !== 'hidden' &&
+          style.pointerEvents !== 'none' && Number(style.opacity) !== 0 &&
+          rect.width > 0 && rect.height > 0;
+      };
+      const labelOf = (el) => (
+        el.innerText || el.getAttribute('aria-label') || el.getAttribute('title') ||
+        el.value || el.textContent || ''
+      ).replace(/\\s+/g, ' ').trim();
+      const matches = (value) => {
+        const text = String(value || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+        if (!text || text.length > 100) return false;
+        return /\\b(claim|get|free|collect|redeem)\\b/i.test(text) ||
+          /領取|免費|领取|免费/.test(text);
+      };
 
-      for (const match of textMatches) {
-        try {
-          const target = await match.evaluateHandle((el) =>
-            el.closest('button, a, [role="button"], [role="link"], input[type="button"], input[type="submit"], [tabindex]:not([tabindex="-1"])') || el
-          );
-          const element = target.asElement();
-          if (element) candidateHandles.push(element);
-          else await target.dispose();
-        } catch {}
+      const targets = new Set();
+      for (const el of document.querySelectorAll(selector)) {
+        if (visible(el) && !el.disabled && el.getAttribute('aria-disabled') !== 'true' &&
+            matches(labelOf(el))) targets.add(el);
       }
 
-      const seenElements = new Set();
+      // Search leaf text once in the page context, not through hundreds of Playwright calls.
+      for (const el of document.querySelectorAll('body *')) {
+        if (el.children.length || !visible(el) || !matches(labelOf(el))) continue;
+        const target = el.closest(selector) || el;
+        if (visible(target) && !target.disabled &&
+            target.getAttribute('aria-disabled') !== 'true') targets.add(target);
+      }
 
-      for (const btn of candidateHandles) {
-        let text = '';
+      const result = [];
+      let index = 0;
+      for (const el of targets) {
+        const label = labelOf(el);
+        if (!matches(label)) continue;
+        const context = el.closest('article, li, [role="listitem"], [data-testid]') ||
+          el.parentElement?.parentElement || el.parentElement;
+        const contextText = (context?.innerText || '').replace(/\\s+/g, ' ').trim().slice(0, 180);
+        const key = [label.toLowerCase(), el.getAttribute('aria-label') || '', contextText].join('|');
+        const id = `${scanId}-${index++}`;
+        el.setAttribute(marker, id);
+        result.push({ id, label: label.slice(0, 100), key, tag: el.tagName.toLowerCase(), html: el.outerHTML.slice(0, 350) });
+      }
+      return result;
+    }, { scanId, selector: interactiveSelector, marker: MARKER });
 
-        try {
-          // 避免同一個元素被互動元素掃描與文字搜尋重複處理。
-          const elementId = await btn.evaluate((el) => {
-            if (!el.__autoClaimScanId) {
-              el.__autoClaimScanId = Math.random().toString(36).slice(2);
-            }
-            return el.__autoClaimScanId;
-          });
-          if (seenElements.has(elementId)) continue;
-          seenElements.add(elementId);
+    for (let step = 0; step < MAX_SCAN_STEPS; step++) {
+      if (Date.now() - scanStartedAt >= MAX_RUNTIME_MS) {
+        console.log(`⏱️ [${ACCOUNT_NAME}] 已達 4 分鐘執行上限，停止掃描`);
+        break;
+      }
 
-          text = (await btn.innerText().catch(() => '')) || (await btn.getAttribute('aria-label')) || '';
-          text = text.trim();
-          if (!text || !(await btn.isVisible())) continue;
+      const candidates = await findCandidates(`scan${step}`);
+      let clickedThisRound = false;
+      let checked = 0;
 
-          const enabled = await btn.evaluate((el) =>
-            !('disabled' in el && el.disabled) && el.getAttribute('aria-disabled') !== 'true'
-          );
-          if (!enabled) continue;
-        } catch {
-          continue;
-        }
+      for (const candidate of candidates) {
+        if (Date.now() - scanStartedAt >= MAX_RUNTIME_MS || checked >= 40) break;
+        if (attemptedKeys.has(candidate.key)) continue;
+        attemptedKeys.add(candidate.key);
+        checked++;
 
-        const normalizedText = text.toLowerCase();
-        const isClaimButton =
-          normalizedText.includes('claim') ||
-          normalizedText.includes('get') ||
-          normalizedText.includes('領取') ||
-          normalizedText.includes('免費') ||
-          normalizedText.includes('免费') ||
-          normalizedText.includes('free');
-
-        if (!isClaimButton) continue;
-
-        let key = text;
-        try {
-          key = await btn.evaluate((el) => {
-            const buttonText = (el.innerText || el.textContent || '').trim().replace(/\s+/g, ' ');
-            const context = el.closest('article, li, [role="listitem"], [data-testid]') ||
-              el.parentElement?.parentElement ||
-              el.parentElement;
-            const contextText = (context?.innerText || '').trim().replace(/\s+/g, ' ').slice(0, 300);
-            return [buttonText, el.getAttribute('aria-label') || '', contextText].join('|');
-          });
-        } catch {}
-
-        if (attemptedKeys.has(key)) continue;
-        attemptedKeys.add(key);
-
-        console.log(`🔎 [${ACCOUNT_NAME}] 找到候選按鈕：${JSON.stringify(text)}`);
+        console.log(`🔎 [${ACCOUNT_NAME}] 找到候選元素：${JSON.stringify(candidate.label)} <${candidate.tag}>`);
+        const locator = page.locator(`[${MARKER}="${candidate.id}"]`).first();
 
         try {
-          // 部分按鈕點擊後會觸發頁面更新；不等待導航完成，避免已觸發操作卻被導航等待拖到逾時。
-          await btn.click({ timeout: 15000, noWaitAfter: true });
+          await locator.click({ timeout: CLICK_TIMEOUT_MS, noWaitAfter: true });
           claimed++;
-          console.log(`🟢 [${ACCOUNT_NAME}] 已點擊：${JSON.stringify(text)}（累計 ${claimed}）`);
           clickedThisRound = true;
-          await page.waitForTimeout(2000);
+          console.log(`🟢 [${ACCOUNT_NAME}] 已送出點擊：${JSON.stringify(candidate.label)}（累計 ${claimed}）`);
+          await page.waitForTimeout(800);
           break;
         } catch (err) {
-          // Playwright 原生點擊逾時時，先確認按鈕仍可操作，再用 DOM click 作一次備援。
-          // 若原生點擊已讓按鈕消失或停用，視為操作已觸發，避免重複點擊。
-          let handled = false;
+          let fallbackClicked = false;
           try {
-            handled = await btn.evaluate((el) => {
-              if (!el.isConnected || el.disabled || el.getAttribute('aria-disabled') === 'true') return true;
-              const style = window.getComputedStyle(el);
-              if (style.display === 'none' || style.visibility === 'hidden') return true;
+            fallbackClicked = await page.evaluate(({ id, marker }) => {
+              const el = document.querySelector(`[${marker}="${id}"]`);
+              if (!el || !el.isConnected || el.disabled ||
+                  el.getAttribute('aria-disabled') === 'true') return false;
+              const style = getComputedStyle(el);
+              const rect = el.getBoundingClientRect();
+              if (style.display === 'none' || style.visibility === 'hidden' ||
+                  rect.width <= 0 || rect.height <= 0) return false;
               el.click();
               return true;
-            });
+            }, { id: candidate.id, marker: MARKER });
           } catch {}
 
-          if (handled) {
+          if (fallbackClicked) {
             claimed++;
-            console.log(`🟡 [${ACCOUNT_NAME}] 原生點擊逾時，已使用 DOM click 備援：${JSON.stringify(text)}（累計 ${claimed}）`);
             clickedThisRound = true;
-            await page.waitForTimeout(2000);
+            console.log(`🟡 [${ACCOUNT_NAME}] DOM 備援已送出點擊：${JSON.stringify(candidate.label)}（累計 ${claimed}）`);
+            await page.waitForTimeout(800);
             break;
           }
 
           failedClicks++;
-          console.log(`⚠️ [${ACCOUNT_NAME}] 點擊失敗：${JSON.stringify(text)}；${err.message}`);
+          console.log(`⚠️ [${ACCOUNT_NAME}] 點擊失敗：${JSON.stringify(candidate.label)}；${err.message.split('\\n')[0]}`);
+          console.log(`   元素資訊：${candidate.html}`);
         }
       }
 
-      // 每次成功點擊後重新掃描，避免頁面更新或按鈕重排造成漏領。
+      // Re-query after a click because the store may rerender or remove the claimed item.
       if (clickedThisRound) continue;
 
-      const metrics = await page.evaluate(() => {
-        const height = Math.max(
-          document.body?.scrollHeight || 0,
-          document.documentElement?.scrollHeight || 0
-        );
-        return {
-          y: window.scrollY,
-          viewport: window.innerHeight,
-          height
-        };
-      });
-
+      const metrics = await page.evaluate(() => ({
+        y: window.scrollY,
+        viewport: window.innerHeight,
+        height: Math.max(document.body?.scrollHeight || 0, document.documentElement?.scrollHeight || 0)
+      }));
       const atBottom = metrics.y + metrics.viewport >= metrics.height - 8;
-      if (atBottom && metrics.height === previousHeight) {
-        stableBottomRounds++;
-      } else {
-        stableBottomRounds = 0;
-      }
+      stableBottomRounds = atBottom && metrics.height === previousHeight ? stableBottomRounds + 1 : 0;
       previousHeight = metrics.height;
 
-      console.log(
-        `📜 [${ACCOUNT_NAME}] 掃描進度：${Math.min(metrics.y + metrics.viewport, metrics.height)}/${metrics.height}，已點擊 ${claimed} 個`
-      );
+      console.log(`📜 [${ACCOUNT_NAME}] 掃描進度：${Math.min(metrics.y + metrics.viewport, metrics.height)}/${metrics.height}，已點擊 ${claimed} 個`);
 
-      // 到達頁尾後持續等待並複查，讓延遲載入的內容有時間出現。
       if (atBottom) {
-        await page.waitForTimeout(1200);
-        if (stableBottomRounds >= 4) {
+        await page.waitForTimeout(700);
+        if (stableBottomRounds >= 3) {
           scanCompleted = true;
           break;
         }
       } else {
-        await page.evaluate(() => {
-          window.scrollBy(0, Math.max(500, Math.floor(window.innerHeight * 0.7)));
-        });
+        await page.evaluate(() => window.scrollBy(0, Math.max(500, Math.floor(window.innerHeight * 0.75))));
         scrollSteps++;
-        await page.waitForTimeout(1000);
+        await page.waitForTimeout(600);
       }
     }
 
