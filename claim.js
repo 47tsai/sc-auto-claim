@@ -239,7 +239,6 @@ async function notify(claimed, accountName, isSuccess) {
       scrollSteps = 0;
       let stableBottomRounds = 0;
       let previousHeight = 0;
-      let successfulClickThisRound = false;
       let anyCandidateThisRound = false;
 
       console.log("🔍 [" + ACCOUNT_NAME + "] 開始第 " + round + "/2 輪掃描");
@@ -275,7 +274,6 @@ async function notify(claimed, accountName, isSuccess) {
 
           if (!clickError) {
             claimed++;
-            successfulClickThisRound = true;
             clickedSuccessfully = true;
             successfulKeys.add(candidate.key);
             console.log("🟢 [" + ACCOUNT_NAME + "] 點擊操作成功：" +
@@ -401,14 +399,10 @@ async function notify(claimed, accountName, isSuccess) {
       "；點擊失敗：" + failedClicks);
     console.log("✅ [" + ACCOUNT_NAME + "] 點擊操作成功數： " + claimed);
 
-    console.log(`📜 [${ACCOUNT_NAME}] 滾動次數：${scrollSteps}`);
-    console.log(`🔍 [${ACCOUNT_NAME}] 完整掃描：${scanCompleted ? '是' : '否'}；點擊失敗：${failedClicks}`);
-
-    console.log(`✅ [${ACCOUNT_NAME}] 完成：${claimed}`);
+    if (fatalPageError) state.lastError = fatalPageError;
+    else delete state.lastError;
 
     const isSuccess = claimed >= 1;
-    const checkedAt = new Date().toISOString();
-
     state.lastClaimAt = checkedAt;
     state.lastResult = isSuccess ? "成功" : "失敗";
 
