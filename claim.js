@@ -305,8 +305,7 @@ async function notify(claimed, accountName, isSuccess) {
 
           if (fallbackClicked) {
             claimed++;
-            successfulClickThisRound = true;
-            clickedSuccessfully = true;
+                        clickedSuccessfully = true;
             successfulKeys.add(candidate.key);
             console.log("🟡 [" + ACCOUNT_NAME + "] DOM 備援點擊成功：" +
               JSON.stringify(candidate.label) + "（累計 " + claimed + "）");
@@ -403,7 +402,7 @@ async function notify(claimed, accountName, isSuccess) {
     else delete state.lastError;
 
     const isSuccess = claimed >= 1;
-    state.lastClaimAt = checkedAt;
+    state.lastClaimAt = new Date().toISOString();
     state.lastResult = isSuccess ? "成功" : "失敗";
 
     state.success = isSuccess;
