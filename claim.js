@@ -115,7 +115,7 @@ async function notify(claimed, accountName, isSuccess) {
       timeout: 60000
     });
 
-    await page.waitForLoadState('networkidle').catch(() => {});
+    await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {});
     await page.waitForTimeout(2000);
 
     console.log(`👉 [${ACCOUNT_NAME}] 開始完整掃描頁面`);
