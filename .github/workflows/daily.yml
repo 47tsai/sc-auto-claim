@@ -3,6 +3,11 @@ name: daily-claim
 on:
   workflow_dispatch:
 
+# 避免同一個 workflow 重疊執行，降低狀態檔推送衝突。
+concurrency:
+  group: sc-auto-claim
+  cancel-in-progress: false
+
 jobs:
   run:
     runs-on: ubuntu-latest
@@ -118,4 +123,6 @@ jobs:
 
           git diff --cached --quiet || git commit -m "update claim status"
 
+          # Workflow 可能在執行期間有新提交，先 rebase 到最新 main 再推送。
+          git pull --rebase origin main
           git push
