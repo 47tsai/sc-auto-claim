@@ -1,8 +1,6 @@
 name: daily-claim
 
 on:
-  schedule:
-    - cron: "0 * * * *"   # 每小時
   workflow_dispatch:
 
 jobs:
