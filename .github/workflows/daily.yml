@@ -62,8 +62,8 @@ jobs:
           const fs = require('fs');
 
           const accounts = [
-            { name: '各位原住民同胞大家好', id: 'A' },
-            { name: '食不食油餅', id: 'B' }
+            { name: '帳號 A', id: 'A' },
+            { name: '帳號 B', id: 'B' }
           ];
 
           const formatTime = (value) => {
