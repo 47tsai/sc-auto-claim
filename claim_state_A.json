@@ -1,8 +1,8 @@
 {
   "gameDay": "2026-11-03_16",
-  "success": false,
-  "lastClaimAt": "2026-11-03T16:02:48.608Z",
-  "lastResult": "失敗",
+  "success": true,
+  "lastClaimAt": "2026-11-04T00:02:09.342Z",
+  "lastResult": "成功",
   "fullScan": true,
   "logicVersion": 2
 }
