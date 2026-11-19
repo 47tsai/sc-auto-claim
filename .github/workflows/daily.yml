@@ -22,10 +22,21 @@ jobs:
           node-version: 20
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
-      - name: Install Playwright browsers
-        run: npx playwright install --with-deps chromium
+      # Playwright 的瀏覽器版本由 package-lock.json 鎖定。
+      # 快取命中時不重新下載；未命中時只安裝 headless shell，
+      # 避免每次透過 APT 鏡像站重裝系統依賴及完整 Chromium。
+      - name: Cache Playwright browser
+        id: playwright-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ubuntu-24.04-playwright-${{ hashFiles('package-lock.json') }}
+
+      - name: Install Playwright Chromium
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: npx playwright install chromium --only-shell
 
       # =========================
       # 🟢 帳號 A
